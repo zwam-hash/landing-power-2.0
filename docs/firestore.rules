@@ -8,7 +8,7 @@ service cloud.firestore {
     }
     
     function getUserData() {
-      return get(/databases/\/documents/users/\).data;
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
     
     function isMaster() {
@@ -74,7 +74,7 @@ service cloud.firestore {
 
     match /sessions/{sessionId} {
       allow read: if isMaster() || isMarketing(resource.data.client_id);
-      allow write: if false; // Ingestión protegida solo ejecutable por Cloud Functions / Admin SDK
+      allow write: if false; // Ingestión protegida solo por Cloud Functions
     }
   }
 }
