@@ -1,0 +1,80 @@
+﻿rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Funciones Auxiliares de Autenticación y Rol
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return get(/databases/\/documents/users/\).data;
+    }
+    
+    function isMaster() {
+      return isAuthenticated() && getUserData().role == 'superadmin';
+    }
+    
+    function belongsToTenant(clientId) {
+      return isAuthenticated() && getUserData().client_id == clientId;
+    }
+    
+    function isOwner(clientId) {
+      return belongsToTenant(clientId) && getUserData().role == 'owner';
+    }
+    
+    function isMarketing(clientId) {
+      return belongsToTenant(clientId) && (getUserData().role == 'marketing' || getUserData().role == 'owner');
+    }
+    
+    function isSales(clientId) {
+      return belongsToTenant(clientId) && (getUserData().role == 'sales' || getUserData().role == 'owner');
+    }
+
+    // --- Colecciones Master (ZWAM) ---
+    match /clients/{clientId} {
+      allow read: if isMaster() || belongsToTenant(clientId);
+      allow write: if isMaster();
+    }
+
+    match /users/{userId} {
+      allow read: if isMaster() || (isAuthenticated() && request.auth.uid == userId);
+      allow write: if isMaster() || (isAuthenticated() && request.auth.uid == userId);
+    }
+
+    match /landing_versions/{versionId} {
+      allow read: if isMaster() || belongsToTenant(resource.data.client_id);
+      allow write: if isMaster() || isOwner(request.resource.data.client_id);
+    }
+
+    // --- Colecciones Tenant (Clientes) ---
+    match /landings/{landingId} {
+      allow read: if isMaster() || belongsToTenant(resource.data.client_id);
+      allow write: if isMaster() || isOwner(request.resource.data.client_id);
+    }
+
+    match /leads/{leadId} {
+      allow read: if isMaster() || isSales(resource.data.client_id) || isMarketing(resource.data.client_id);
+      allow create, update: if isMaster() || isSales(request.resource.data.client_id);
+      allow delete: if isMaster() || isOwner(request.resource.data.client_id);
+    }
+
+    match /sales/{saleId} {
+      allow read: if isMaster() || isOwner(resource.data.client_id) || isSales(resource.data.client_id);
+      allow write: if isMaster() || isSales(request.resource.data.client_id);
+    }
+
+    match /campaigns/{campaignId} {
+      allow read, write: if isMaster() || isMarketing(resource.data.client_id);
+    }
+
+    match /integrations/{integrationId} {
+      allow read, write: if isMaster() || isOwner(resource.data.client_id);
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if isMaster() || isMarketing(resource.data.client_id);
+      allow write: if false; // Ingestión protegida solo ejecutable por Cloud Functions / Admin SDK
+    }
+  }
+}
