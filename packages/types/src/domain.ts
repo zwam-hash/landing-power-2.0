@@ -9,6 +9,7 @@ import type {
   ClientStatus,
   ContractStatus,
   CRMRecordSyncStatus,
+  DataScope,
   EventType,
   IntegrationStatus,
   LandingBillingStatus,
@@ -20,7 +21,9 @@ import type {
   MembershipStatus,
   ModuleStatus,
   OpportunityStatus,
+  Permission,
   RecommendedAction,
+  Role,
   SaleStatus,
   SubscriptionStatus,
   UserStatus,
@@ -59,6 +62,7 @@ export interface User {
   email: string;
   display_name: string;
   status: UserStatus;
+  is_global_admin?: boolean;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -67,8 +71,9 @@ export interface Membership {
   membership_id: string;
   user_id: string;
   client_id: string;
-  role: string;
-  permissions: string[];
+  role: Role;
+  data_scope: DataScope;
+  permissions: string[] | Permission[];
   status: MembershipStatus;
   created_at: Date | string;
   updated_at: Date | string;

@@ -61,6 +61,56 @@ export type CRMRecordSyncStatus = 'synced' | 'pending' | 'failed';
 
 export type CapiStatus = 'pending' | 'sent' | 'failed' | 'skipped';
 
+export type Role =
+  'client_master' | 'marketing' | 'commercial' | 'agency' | 'zwam_admin';
+
+export type DataScope = 'global' | 'client' | 'team' | 'assigned';
+
+export type Permission =
+  | 'leads.view'
+  | 'leads.create'
+  | 'leads.edit'
+  | 'leads.delete'
+  | 'leads.export'
+  | 'sales.view'
+  | 'sales.create'
+  | 'sales.edit'
+  | 'sales.delete'
+  | 'sales.export'
+  | 'marketing.view'
+  | 'marketing.manage'
+  | 'bi.view'
+  | 'bi.export'
+  | 'settings.view'
+  | 'settings.manage'
+  | 'users.view'
+  | 'users.manage'
+  | 'memberships.view'
+  | 'memberships.manage';
+
+export const PERMISSIONS: Permission[] = [
+  'leads.view',
+  'leads.create',
+  'leads.edit',
+  'leads.delete',
+  'leads.export',
+  'sales.view',
+  'sales.create',
+  'sales.edit',
+  'sales.delete',
+  'sales.export',
+  'marketing.view',
+  'marketing.manage',
+  'bi.view',
+  'bi.export',
+  'settings.view',
+  'settings.manage',
+  'users.view',
+  'users.manage',
+  'memberships.view',
+  'memberships.manage',
+];
+
 export type AuditResourceType =
   | 'client'
   | 'user'

@@ -1,10 +1,34 @@
-# Data Model Specification — ZWAM 2.0 (Module 1 Data Foundation)
+# Data Model Specification — ZWAM 2.0 (Module 2 Identity & Security)
 
 This document provides a technical specification of the domain entities, key fields, relationships, and status enums defined in `@zwam/types`.
 
 ---
 
-## 1. Core Domain
+## 1. Core Identity & Security Domain
+
+### `users`
+
+Global user identities mapped 1:1 from Firebase Auth UIDs.
+
+- `user_id` (string, PK / Auth UID)
+- `email` (string)
+- `display_name` (string)
+- `status` (`UserStatus`: `'active'` | `'disabled'` | `'pending'`)
+- `is_global_admin` (boolean optional — flags global ZWAM admin status)
+- `created_at`, `updated_at` (Timestamp)
+
+### `memberships`
+
+Source of truth for user authorization and membership scoping per client organization.
+
+- `membership_id` (string, PK)
+- `user_id` (string, FK -> `users.user_id`)
+- `client_id` (string, FK -> `clients.client_id`)
+- `role` (`Role`: `'client_master'` | `'marketing'` | `'commercial'` | `'agency'` | `'zwam_admin'`)
+- `data_scope` (`DataScope`: `'global'` | `'client'` | `'team'` | `'assigned'`)
+- `permissions` (string array of `Permission`: e.g. `['leads.view', 'sales.create']`)
+- `status` (`MembershipStatus`: `'active'` | `'invited'` | `'disabled'`)
+- `created_at`, `updated_at` (Timestamp)
 
 ### `clients`
 
@@ -17,37 +41,6 @@ Root entity for customer organizations.
 - `contact_email` (string)
 - `contact_phone` (string)
 - `status` (`ClientStatus`: `'active'` | `'inactive'` | `'suspended'` | `'pending'`)
-- `created_at`, `updated_at` (Timestamp)
-
-### `client_contacts`
-
-Key contacts within a client organization.
-
-- `contact_id` (string, PK)
-- `client_id` (string, FK -> `clients.client_id`)
-- `name`, `email`, `phone`, `role` (string)
-- `status` (`ClientContactStatus`: `'active'` | `'inactive'`)
-- `created_at`, `updated_at` (Timestamp)
-
-### `users`
-
-Global user identities mapped from Firebase Auth UIDs.
-
-- `user_id` (string, PK / Auth UID)
-- `email`, `display_name` (string)
-- `status` (`UserStatus`: `'active'` | `'disabled'` | `'pending'`)
-- `created_at`, `updated_at` (Timestamp)
-
-### `memberships`
-
-Role and permission mapping connecting users to client organizations.
-
-- `membership_id` (string, PK)
-- `user_id` (string, FK -> `users.user_id`)
-- `client_id` (string, FK -> `clients.client_id`)
-- `role` (string)
-- `permissions` (string array)
-- `status` (`MembershipStatus`: `'active'` | `'invited'` | `'disabled'`)
 - `created_at`, `updated_at` (Timestamp)
 
 ---
@@ -68,46 +61,14 @@ Landing pages owned by a client.
 - `billing_status` (`LandingBillingStatus`: `'active'` | `'past_due'` | `'cancelled'`)
 - `created_at`, `updated_at` (Timestamp)
 
-### `sessions` & `events`
-
-Web session context and behavior tracking logs.
-
-- Key isolation: `client_id` + `landing_id` + `session_id`.
-- Captures `utm_*`, `fbclid`, `gclid`, `ttclid`, `fbp`, `fbc`.
-
 ---
 
 ## 3. Leads & Commercial Domain
 
-### `leads`
+### `leads` & `sales`
 
-Acquired prospective customers.
+Operational client records isolated strictly by `client_id`.
 
-- `lead_id` (string, PK)
+- `lead_id` / `sale_id` (string, PK)
 - `client_id` (string, FK -> `clients.client_id`)
-- `landing_id`, `session_id` (string, FK)
-- `name`, `email`, `phone` (string)
-- `attribution` (Attribution object)
-- `lead_score` (number)
-- `lead_quality` (`LeadQuality`: `'priority'` | `'high'` | `'medium'` | `'low'` | `'cold'`)
-- `recommended_action` (`RecommendedAction`: `'immediate_priority'` | `'fast_contact'` | `'follow_up'` | `'nurturing'` | `'remarketing'`)
-- `created_at`, `updated_at` (Timestamp)
-
-### `opportunities` & `sales`
-
-Commercial conversion tracking.
-
-- `opportunity_id` (string, PK)
-- `sale_id` (string, PK)
-- `client_id` (string, FK -> `clients.client_id`)
-- `lead_id` (string, FK -> `leads.lead_id`)
-- `value`, `currency` (number, string)
-- `status` (`OpportunityStatus` / `SaleStatus`)
-
----
-
-## 4. Integrations & Operations
-
-### `integrations`, `crm_records`, `capi_logs`, `audit_logs`, `usage`
-
-- All customer operational integration records retain `client_id` as the root isolation field.
+- `status` (`LeadStatus` / `SaleStatus`)
