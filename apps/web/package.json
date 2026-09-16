@@ -1,0 +1,12 @@
+{
+  "name": "@bi-control-center/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "firebase": "^12.18.0"
+  }
+}

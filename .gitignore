@@ -1,9 +1,9 @@
-﻿node_modules/
+node_modules/
 dist/
-build/
+coverage/
 .env
 .env.*
-*.log
-service-account-key.json
+!.env.example
 .firebase/
+.firebaserc.local
 .DS_Store
