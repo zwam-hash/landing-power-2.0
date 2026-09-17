@@ -56,7 +56,7 @@ Global module definitions and client-specific module configurations.
 
 ### `landings`
 
-Landing pages owned by a client.
+Landing pages owned by a client organization.
 
 - `landing_id` (string, PK)
 - `client_id` (string, FK -> `clients.client_id`)
@@ -67,6 +67,73 @@ Landing pages owned by a client.
 - `operational_status` (`LandingOperationalStatus`: `'active'` | `'inactive'` | `'maintenance'`)
 - `billing_status` (`LandingBillingStatus`: `'active'` | `'past_due'` | `'cancelled'`)
 - `created_at`, `updated_at` (Timestamp)
+
+### `landing_versions`
+
+Immutable content/configuration versions of a landing page.
+
+- `landing_version_id` (string, PK)
+- `landing_id` (string, FK -> `landings.landing_id`)
+- `client_id` (string, FK -> `clients.client_id`)
+- `version_number` (number)
+- `status` (`LandingVersionStatus`: `'draft'` | `'published'` | `'archived'`)
+- `configuration` (`Record<string, unknown>`)
+- `created_at`, `updated_at` (Timestamp)
+
+### `sessions`
+
+Visitor sessions on a landing page.
+
+- `session_id` (string, PK)
+- `client_id` (string, FK -> `clients.client_id`)
+- `landing_id` (string, FK -> `landings.landing_id`)
+- `landing_version_id` (string, resolved server-side from `published_version_id`)
+- `anonymous_id` (string, persistent browser identifier from `localStorage`)
+- `started_at` (Timestamp)
+- `last_activity_at` (Timestamp — updated on valid events; session inactive if `now - last_activity_at >= 3m`)
+- `tracking_context` (`TrackingContext`: RAW `utm_*`, `fbclid`, `fbp`, `fbc`, `gclid`, `wbraid`, `gbraid`, `ttclid`, `referrer`, `landing_url`)
+- `attribution` (`Attribution`: `source_type`, `platform`, `campaign_id`, `adset_id`, `ad_id`, `confidence`)
+- `device` (`DeviceContext`: `user_agent`, `language`, `screen_resolution`, `viewport_size`)
+- `status` (`SessionStatus`: `'active'` | `'expired'` | `'converted'`)
+
+### `events`
+
+Behavioral and transactional events captured during visitor interaction.
+
+- `event_id` (string, PK / UUID v4 for idempotency)
+- `session_id` (string, FK -> `sessions.session_id`)
+- `client_id` (string, FK -> `clients.client_id`)
+- `landing_id` (string, FK -> `landings.landing_id`)
+- `landing_version_id` (string)
+- `anonymous_id` (string)
+- `event_type` (`EventType`: `'page_view'` | `'scroll_depth'` | `'cta_click'` | `'form_start'` | `'form_submit'` | `'lead_captured'` | `'outbound_click'` | `'custom'`)
+- `event_name` (string)
+- `occurred_at` (Timestamp — client-side timestamp)
+- `received_at` (Timestamp — server-generated timestamp)
+- `metadata` (`Record<string, unknown>`)
+- `schema_version` (number)
+
+### `campaigns`, `adsets`, `ads`
+
+Optional ad hierarchy enrichment models for paid traffic.
+
+- `campaign_id` / `adset_id` / `ad_id` (string, PK)
+- `client_id` (string, FK -> `clients.client_id`)
+- `platform` (`AttributionPlatform`: `'meta'` | `'google'` | `'instagram'` | `'tiktok'` | `'linkedin'` | `'other'`)
+- `name` (string)
+- `external_id` (string)
+- `status` (`CampaignStatus` / `AdsetStatus` / `AdStatus`: `'active'` | `'paused'` | `'archived'`)
+- `utm_campaign` / `utm_content` / `utm_term` (string optional)
+
+### `rate_limits`
+
+Ephemeral Firestore documents tracking request window limits.
+
+- `rate_limit_id` (string, PK: `{key}_win_{minuteBucket}`)
+- `client_id` (string)
+- `minute_bucket` (number)
+- `request_count` (number)
+- `expires_at` (Timestamp — TTL set to 5 minutes after bucket window)
 
 ---
 

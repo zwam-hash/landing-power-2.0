@@ -1,6 +1,8 @@
 import type {
   AdStatus,
   AdsetStatus,
+  AttributionConfidence,
+  AttributionPlatform,
   AuditResourceType,
   CampaignStatus,
   CapiStatus,
@@ -25,6 +27,7 @@ import type {
   RecommendedAction,
   Role,
   SaleStatus,
+  SourceType,
   SubscriptionStatus,
   UserStatus,
 } from './enums.js';
@@ -160,7 +163,7 @@ export interface Campaign {
   landing_id?: string;
   external_id?: string;
   name: string;
-  platform: string;
+  platform: AttributionPlatform | string;
   status: CampaignStatus;
   budget?: number;
   start_date?: Date | string;
@@ -175,6 +178,7 @@ export interface Adset {
   client_id: string;
   external_id?: string;
   name: string;
+  platform?: AttributionPlatform | string;
   status: AdsetStatus;
   created_at: Date | string;
   updated_at: Date | string;
@@ -187,6 +191,7 @@ export interface Ad {
   client_id: string;
   external_id?: string;
   name: string;
+  platform?: AttributionPlatform | string;
   status: AdStatus;
   created_at: Date | string;
   updated_at: Date | string;
@@ -198,28 +203,68 @@ export interface TrackingContext {
   utm_campaign?: string;
   utm_content?: string;
   utm_term?: string;
+
   fbclid?: string;
-  gclid?: string;
-  ttclid?: string;
   fbp?: string;
   fbc?: string;
+
+  gclid?: string;
+  wbraid?: string;
+  gbraid?: string;
+
+  ttclid?: string;
+
+  referrer?: string;
+  landing_url?: string;
 }
 
-export interface Attribution extends TrackingContext {
-  source_platform?: string;
-  is_paid_traffic?: boolean;
-}
+export interface Attribution {
+  source_type: SourceType;
+  platform: AttributionPlatform | null;
 
-export interface Session extends TrackingContext {
-  session_id: string;
-  client_id: string;
-  landing_id: string;
+  source: string;
+  medium: string;
+  campaign: string;
+  content: string;
+  term: string;
+
+  attribution_confidence: AttributionConfidence;
+
   campaign_id?: string;
   adset_id?: string;
   ad_id?: string;
-  visitor_id?: string;
-  first_seen_at: Date | string;
-  last_seen_at: Date | string;
+}
+
+export interface Session {
+  session_id: string;
+  client_id: string;
+  landing_id: string;
+  landing_version_id: string;
+  anonymous_id: string;
+  user_id?: string;
+
+  started_at: Date | string;
+  last_activity_at: Date | string;
+
+  device_type: string;
+  browser: string;
+  browser_version: string;
+  os: string;
+  os_version: string;
+
+  screen_width: number;
+  screen_height: number;
+  viewport_width: number;
+  viewport_height: number;
+
+  language: string;
+  timezone: string;
+
+  user_agent: string;
+  referrer: string;
+
+  tracking_context: TrackingContext;
+  attribution: Attribution;
 }
 
 export interface Event {
@@ -227,10 +272,14 @@ export interface Event {
   client_id: string;
   landing_id: string;
   session_id: string;
-  event_name: string;
-  event_type: string;
-  event_data: Record<string, unknown>;
+
+  event_type: EventType;
+
   occurred_at: Date | string;
+  received_at: Date | string;
+
+  page: string;
+  metadata: Record<string, unknown>;
 }
 
 // ==========================================

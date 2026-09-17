@@ -29,6 +29,13 @@ export type AdsetStatus = 'active' | 'paused' | 'archived';
 
 export type AdStatus = 'active' | 'paused' | 'archived';
 
+export type SourceType = 'paid' | 'organic' | 'referral' | 'direct';
+
+export type AttributionPlatform =
+  'meta' | 'google' | 'instagram' | 'tiktok' | 'linkedin' | 'other';
+
+export type AttributionConfidence = 'explicit' | 'inferred' | 'unknown';
+
 export type EventType =
   | 'page_view'
   | 'scroll'

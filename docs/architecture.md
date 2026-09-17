@@ -104,3 +104,36 @@ The project uses a dedicated lightweight workspace package `packages/types` (`@z
 - **Firebase Project Target:** Confirmed project ID `zwam-bi` configured in `.firebaserc` and `apps/web/src/lib/firebase.ts`.
 - **Backend Admin:** `functions/src/lib/firebase-admin.ts` provides safe SDK initialization for Cloud Functions 2nd Gen.
 - **Emulators:** Local testing utilizes Firebase Emulator Suite (Auth: 9099, Functions: 5001, Firestore: 8080, Storage: 9199, UI: 4000) without accessing or requiring production credentials.
+
+---
+
+## 7. Acquisition Infrastructure & Processing Engine (Module 3)
+
+### 7.1 Flow Hierarchy
+
+`CAMPAIGN → ADSET → AD → LANDING → SESSION → EVENTS → ATTRIBUTION`
+
+### 7.2 Session Lifecycle & Inactivity Rules
+
+- **No Synthetic Heartbeats:** Sessions are strictly validated against real user activity. A session is active if `now - last_activity_at < 3 minutes` (180,000 ms).
+- **Tab Reuse:** A new browser tab shares the existing active session if valid for the current identity/landing context.
+- **No Pings:** `last_activity_at` updates exclusively on valid event ingestion or initial session creation/reuse.
+
+### 7.3 Client-Side Tracking SDK
+
+- **Identity Storage:** `anonymous_id` is generated as a UUID v4 and stored **exclusively in `localStorage`** (never `sessionStorage`).
+- **RAW Context Preservation:** Captures full untruncated parameters (`utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, `utm_content`, `fbclid`, `fbp`, `fbc`, `gclid`, `wbraid`, `gbraid`, `ttclid`, `referrer`, `landing_url`).
+- **Public Ingestion:** Public events do NOT send untrusted client-provided `user_id` in request payloads.
+
+### 7.4 Server-Side Execution & Safeguards
+
+- **Version Resolution:** `landing_version_id` is resolved server-side from `landings/{landing_id}.published_version_id`.
+- **Circuit Breaker:** Validates `client.status === 'active'` and `landing.operational_status === 'active'`. Suspended clients or inactive landings abort ingestion immediately.
+- **Rate Limiting:** Fixed 1-minute window rate limiting using Firestore atomic increments (`rate_limits/{bucketKey}`) with ephemeral hashed IP and 5-minute TTL cleanup.
+- **Idempotency & Auditing:** Events use UUID v4 `event_id` for idempotency and enforce server-generated `received_at` timestamps. Zero orphan events are permitted (session must exist).
+
+### 7.5 Attribution Engine
+
+- **Source Classification:** `paid` | `organic` | `referral` | `direct`.
+- **Platform Mapping:** Maps ad parameters/click IDs to `AttributionPlatform` (`meta`, `google`, `instagram`, `tiktok`, `linkedin`, `other`). Platform is `null` for non-paid types (`referral`, `direct`).
+- **Confidence Scoring:** `explicit` (click IDs present), `inferred` (UTMs present without click ID), or `unknown` (pure organic/direct).
