@@ -1,0 +1,1330 @@
+
+
+============================================================
+FILE: functions/src/leads/registration.ts
+============================================================
+
+import { randomUUID } from 'node:crypto';
+import type { Lead, RegistrationSource, Session } from '@zwam/types';
+import { checkCircuitBreaker } from '../lib/circuit-breaker.js';
+import { getFirestoreAdmin } from '../lib/firebase-admin.js';
+import { isValidUuidV4 } from '../acquisition/validation.js';
+
+export interface RegisterLeadParams {
+  clientId: string;
+  landingId: string;
+  sessionId: string;
+  anonymousId: string;
+  registrationSource: RegistrationSource;
+  name: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  city?: string;
+}
+
+export interface RegisterLeadResult {
+  lead: Lead;
+  isNew: boolean;
+}
+
+export async function registerLeadLogic(
+  params: RegisterLeadParams,
+): Promise<RegisterLeadResult> {
+  const {
+    clientId,
+    landingId,
+    sessionId,
+    anonymousId,
+    registrationSource,
+    name,
+    email,
+    phone,
+    company,
+    city,
+  } = params;
+
+  // 1. Input validations
+  if (!isValidUuidV4(anonymousId)) {
+    throw new Error('BadRequest: Invalid anonymous_id UUID v4 format.');
+  }
+
+  if (!name || name.trim().length === 0) {
+    throw new Error('BadRequest: Lead registration requires a valid name.');
+  }
+
+  const normEmail = email ? email.toLowerCase().trim() : undefined;
+  const normPhone = phone ? phone.replace(/[^\d+]/g, '') : undefined;
+  const normName = name.trim();
+  const normCompany = company ? company.trim() : undefined;
+  const normCity = city ? city.trim() : undefined;
+
+  if (!normEmail && !normPhone) {
+    throw new Error(
+      'BadRequest: Lead registration requires at least an email or phone number.',
+    );
+  }
+
+  // 2. Circuit Breaker
+  await checkCircuitBreaker(clientId, landingId);
+
+  // 3. Verify Session exists and matches client_id & landing_id
+  const db = getFirestoreAdmin();
+  const sessionSnap = await db.collection('sessions').doc(sessionId).get();
+  if (!sessionSnap.exists) {
+    throw new Error(`NotFound: Session '${sessionId}' does not exist.`);
+  }
+
+  const session = sessionSnap.data() as Session;
+  if (session.client_id !== clientId || session.landing_id !== landingId) {
+    throw new Error(
+      `Forbidden: Registration client_id '${clientId}' or landing_id '${landingId}' does not match session client_id '${session.client_id}' / landing_id '${session.landing_id}'.`,
+    );
+  }
+
+  // 4. Deduplication Logic:
+  // Rules: (phone + email) OR (phone + name) OR (email)
+  let matchedLead: Lead | null = null;
+
+  // Match 1: Search by email if email is present
+  if (normEmail) {
+    const emailSnap = await db
+      .collection('leads')
+      .where('client_id', '==', clientId)
+      .where('email', '==', normEmail)
+      .get();
+
+    if (!emailSnap.empty) {
+      matchedLead = emailSnap.docs[0].data() as Lead;
+    }
+  }
+
+  // Match 2: Search by phone if no email match was found and phone is present
+  if (!matchedLead && normPhone) {
+    const phoneSnap = await db
+      .collection('leads')
+      .where('client_id', '==', clientId)
+      .where('phone', '==', normPhone)
+      .get();
+
+    for (const doc of phoneSnap.docs) {
+      const candidate = doc.data() as Lead;
+      const candidateName = candidate.name.toLowerCase().trim();
+      const candidateEmail = candidate.email
+        ? candidate.email.toLowerCase().trim()
+        : undefined;
+
+      const sameEmail = Boolean(
+        normEmail && candidateEmail && candidateEmail === normEmail,
+      );
+      const sameName = Boolean(candidateName === normName.toLowerCase());
+
+      if (sameEmail || sameName) {
+        matchedLead = candidate;
+        break;
+      }
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+
+  // 5. Update existing Lead or Create New Lead
+  if (matchedLead) {
+    const finalEmail = normEmail || matchedLead.email;
+    const finalPhone = normPhone || matchedLead.phone;
+    const finalCompany = normCompany || matchedLead.company;
+    const finalCity = normCity || matchedLead.city;
+
+    const updatedLead: Lead = {
+      ...matchedLead,
+      name: normName,
+      ...(finalEmail ? { email: finalEmail } : {}),
+      ...(finalPhone ? { phone: finalPhone } : {}),
+      ...(finalCompany ? { company: finalCompany } : {}),
+      ...(finalCity ? { city: finalCity } : {}),
+      registration_session_id: sessionId,
+      registration_source: registrationSource,
+      updated_at: nowIso,
+    };
+
+    await db.collection('leads').doc(matchedLead.lead_id).set(updatedLead);
+
+    return {
+      lead: updatedLead,
+      isNew: false,
+    };
+  }
+
+  const leadId = randomUUID();
+  const newLead: Lead = {
+    lead_id: leadId,
+    client_id: clientId,
+    anonymous_id: anonymousId,
+    name: normName,
+    ...(normEmail ? { email: normEmail } : {}),
+    ...(normPhone ? { phone: normPhone } : {}),
+    ...(normCompany ? { company: normCompany } : {}),
+    ...(normCity ? { city: normCity } : {}),
+    registration_session_id: sessionId,
+    registration_source: registrationSource,
+    created_at: nowIso,
+    updated_at: nowIso,
+    status: 'new',
+  };
+
+  await db.collection('leads').doc(leadId).set(newLead);
+
+  return {
+    lead: newLead,
+    isNew: true,
+  };
+}
+
+
+
+============================================================
+FILE: apps/web/src/lib/tracking/leads.ts
+============================================================
+
+import type { Lead } from '@zwam/types';
+import { getOrCreateAnonymousId } from './anonymous-id.js';
+import { AcquisitionApiClient } from './client.js';
+import { emitTrackingEvent } from './events.js';
+import { ensureActiveSession } from './session.js';
+
+export interface FormRegistrationParams {
+  name: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  city?: string;
+}
+
+export interface WhatsAppPreformParams {
+  name: string;
+  city?: string;
+  phone?: string; // Optional if phone can be extracted from session
+}
+
+export async function submitFormRegistration(
+  clientId: string,
+  landingId: string,
+  params: FormRegistrationParams,
+  apiClient?: AcquisitionApiClient,
+): Promise<Lead> {
+  const client = apiClient || new AcquisitionApiClient();
+  const session = await ensureActiveSession(clientId, landingId, client);
+  const anonymousId = getOrCreateAnonymousId();
+
+  // Ingest form_submit custom event
+  await emitTrackingEvent(
+    clientId,
+    landingId,
+    'custom',
+    { event_name: 'form_submit', name: params.name },
+    client,
+  );
+
+  const res = await client.registerLead({
+    clientId,
+    landingId,
+    sessionId: session.session_id,
+    anonymousId,
+    registrationSource: 'form',
+    ...params,
+  });
+
+  return res.lead;
+}
+
+export async function submitWhatsAppPreform(
+  clientId: string,
+  landingId: string,
+  params: WhatsAppPreformParams,
+  apiClient?: AcquisitionApiClient,
+): Promise<Lead> {
+  const client = apiClient || new AcquisitionApiClient();
+  const session = await ensureActiveSession(clientId, landingId, client);
+  const anonymousId = getOrCreateAnonymousId();
+
+  // Ingest whatsapp_click event
+  await emitTrackingEvent(
+    clientId,
+    landingId,
+    'whatsapp_click',
+    { name: params.name },
+    client,
+  );
+
+  const res = await client.registerLead({
+    clientId,
+    landingId,
+    sessionId: session.session_id,
+    anonymousId,
+    registrationSource: 'whatsapp_preform',
+    ...params,
+  });
+
+  return res.lead;
+}
+
+
+
+============================================================
+FILE: apps/web/src/lib/tracking/client.ts
+============================================================
+
+import type { Event, Session, TrackingContext } from '@zwam/types';
+
+export interface CreateSessionRequest {
+  clientId: string;
+  landingId: string;
+  anonymousId: string;
+  userId?: string;
+  deviceInfo: Record<string, unknown>;
+  trackingContext: TrackingContext;
+}
+
+export interface IngestEventRequest {
+  eventId: string;
+  clientId: string;
+  landingId: string;
+  sessionId: string;
+  eventType: string;
+  occurredAt: string;
+  page?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Public HTTP Client for Acquisition Public Event API Endpoints.
+ */
+export class AcquisitionApiClient {
+  private baseUrl: string;
+
+  constructor(baseUrl: string = '/api') {
+    this.baseUrl = baseUrl;
+  }
+
+  async createOrReuseSession(
+    req: CreateSessionRequest,
+  ): Promise<{ session: Session; isReused: boolean }> {
+    const res = await fetch(`${this.baseUrl}/createOrReuseSession`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`SessionIngestionError (${res.status}): ${errText}`);
+    }
+
+    return res.json();
+  }
+
+  async ingestEvent(
+    req: IngestEventRequest,
+  ): Promise<{ event: Event; isDuplicate: boolean }> {
+    const res = await fetch(`${this.baseUrl}/ingestEvent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`EventIngestionError (${res.status}): ${errText}`);
+    }
+
+    return res.json();
+  }
+
+  async registerLead(req: {
+    clientId: string;
+    landingId: string;
+    sessionId: string;
+    anonymousId: string;
+    registrationSource: 'form' | 'whatsapp_preform';
+    name: string;
+    email?: string;
+    phone?: string;
+    company?: string;
+    city?: string;
+  }): Promise<{ lead: any; isNew: boolean }> {
+    const res = await fetch(`${this.baseUrl}/registerLead`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`LeadRegistrationError (${res.status}): ${errText}`);
+    }
+
+    return res.json();
+  }
+}
+
+
+
+============================================================
+FILE: packages/types/src/domain.ts
+============================================================
+
+import type {
+  AdStatus,
+  AdsetStatus,
+  AttributionConfidence,
+  AttributionPlatform,
+  AuditResourceType,
+  CampaignStatus,
+  CapiStatus,
+  ClientContactStatus,
+  ClientModuleStatus,
+  ClientStatus,
+  ContractStatus,
+  CRMRecordSyncStatus,
+  DataScope,
+  EventType,
+  IntegrationStatus,
+  LandingBillingStatus,
+  LandingOperationalStatus,
+  LandingStatus,
+  LandingVersionStatus,
+  LeadQuality,
+  LeadStatus,
+  MembershipStatus,
+  ModuleStatus,
+  OpportunityStatus,
+  Permission,
+  RecommendedAction,
+  RegistrationSource,
+  Role,
+  SaleStatus,
+  SourceType,
+  SubscriptionStatus,
+  UserStatus,
+} from './enums.js';
+
+// ==========================================
+// CORE DOMAIN
+// ==========================================
+
+export interface Client {
+  client_id: string;
+  company_name: string;
+  business_sector: string;
+  legal_name: string;
+  contact_email: string;
+  contact_phone: string;
+  status: ClientStatus;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface ClientContact {
+  contact_id: string;
+  client_id: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: string;
+  status: ClientContactStatus;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface User {
+  user_id: string;
+  email: string;
+  display_name: string;
+  status: UserStatus;
+  is_global_admin?: boolean;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface Membership {
+  membership_id: string;
+  user_id: string;
+  client_id: string;
+  role: Role;
+  data_scope: DataScope;
+  permissions: string[] | Permission[];
+  status: MembershipStatus;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface Contract {
+  contract_id: string;
+  client_id: string;
+  status: ContractStatus;
+  start_date: Date | string;
+  end_date?: Date | string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface Subscription {
+  subscription_id: string;
+  client_id: string;
+  plan: string;
+  status: SubscriptionStatus;
+  monthly_fee: number;
+  currency: string;
+  start_date: Date | string;
+  end_date?: Date | string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface Module {
+  module_id: string;
+  key: string;
+  name: string;
+  description: string;
+  status: ModuleStatus;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface ClientModule {
+  client_module_id: string;
+  client_id: string;
+  module_id: string;
+  status: ClientModuleStatus;
+  configuration: Record<string, unknown>;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+// ==========================================
+// ACQUISITION DOMAIN
+// ==========================================
+
+export interface Landing {
+  landing_id: string;
+  client_id: string;
+  name: string;
+  slug: string;
+  status: LandingStatus;
+  monthly_fee: number;
+  draft_version_id?: string;
+  published_version_id?: string;
+  operational_status: LandingOperationalStatus;
+  billing_status: LandingBillingStatus;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface LandingVersion {
+  landing_version_id: string;
+  landing_id: string;
+  client_id: string;
+  version: number;
+  status: LandingVersionStatus;
+  configuration: Record<string, unknown>;
+  content: Record<string, unknown>;
+  created_at: Date | string;
+  updated_at: Date | string;
+  published_at?: Date | string;
+}
+
+export interface Campaign {
+  campaign_id: string;
+  client_id: string;
+  landing_id?: string;
+  external_id?: string;
+  name: string;
+  platform: AttributionPlatform | string;
+  status: CampaignStatus;
+  budget?: number;
+  start_date?: Date | string;
+  end_date?: Date | string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface Adset {
+  adset_id: string;
+  campaign_id: string;
+  client_id: string;
+  external_id?: string;
+  name: string;
+  platform?: AttributionPlatform | string;
+  status: AdsetStatus;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface Ad {
+  ad_id: string;
+  adset_id: string;
+  campaign_id: string;
+  client_id: string;
+  external_id?: string;
+  name: string;
+  platform?: AttributionPlatform | string;
+  status: AdStatus;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface TrackingContext {
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  utm_content?: string;
+  utm_term?: string;
+
+  fbclid?: string;
+  fbp?: string;
+  fbc?: string;
+
+  gclid?: string;
+  wbraid?: string;
+  gbraid?: string;
+
+  ttclid?: string;
+
+  referrer?: string;
+  landing_url?: string;
+}
+
+export interface Attribution {
+  source_type: SourceType;
+  platform: AttributionPlatform | null;
+
+  source: string;
+  medium: string;
+  campaign: string;
+  content: string;
+  term: string;
+
+  attribution_confidence: AttributionConfidence;
+
+  campaign_id?: string;
+  adset_id?: string;
+  ad_id?: string;
+}
+
+export interface Session {
+  session_id: string;
+  client_id: string;
+  landing_id: string;
+  landing_version_id: string;
+  anonymous_id: string;
+  user_id?: string;
+
+  started_at: Date | string;
+  last_activity_at: Date | string;
+
+  device_type: string;
+  browser: string;
+  browser_version: string;
+  os: string;
+  os_version: string;
+
+  screen_width: number;
+  screen_height: number;
+  viewport_width: number;
+  viewport_height: number;
+
+  language: string;
+  timezone: string;
+
+  user_agent: string;
+  referrer: string;
+
+  tracking_context: TrackingContext;
+  attribution: Attribution;
+}
+
+export interface Event {
+  event_id: string;
+  client_id: string;
+  landing_id: string;
+  session_id: string;
+
+  event_type: EventType;
+
+  occurred_at: Date | string;
+  received_at: Date | string;
+
+  page: string;
+  metadata: Record<string, unknown>;
+}
+
+// ==========================================
+// LEADS DOMAIN
+// ==========================================
+
+export interface ScoreBreakdown {
+  behavior_score: number;
+  intent_score: number;
+  context_score: number;
+}
+
+export interface ScoreFlags {
+  is_paid_traffic: boolean;
+  is_returning_user: boolean;
+  has_high_intent: boolean;
+}
+
+export interface LeadAttribution extends Attribution {
+  landing_id?: string;
+  campaign_id?: string;
+  adset_id?: string;
+  ad_id?: string;
+}
+
+export interface Lead {
+  lead_id: string;
+  client_id: string;
+
+  anonymous_id: string;
+
+  name: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  city?: string;
+
+  registration_session_id: string;
+  registration_source: RegistrationSource;
+
+  created_at: Date | string;
+  updated_at: Date | string;
+
+  status: LeadStatus;
+}
+
+// Alias interfaces for consistency
+export interface LeadScore {
+  score: number;
+  quality: LeadQuality;
+  recommended_action: RecommendedAction;
+  breakdown: ScoreBreakdown;
+  flags: ScoreFlags;
+}
+
+// ==========================================
+// COMMERCIAL DOMAIN
+// ==========================================
+
+export interface Opportunity {
+  opportunity_id: string;
+  client_id: string;
+  lead_id: string;
+  status: OpportunityStatus;
+  value: number;
+  currency: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface Sale {
+  sale_id: string;
+  client_id: string;
+  lead_id: string;
+  opportunity_id?: string;
+  value: number;
+  currency: string;
+  status: SaleStatus;
+  sold_at: Date | string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface Revenue {
+  client_id: string;
+  period: string;
+  total_revenue: number;
+  currency: string;
+  sales_count: number;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+// ==========================================
+// INTEGRATIONS DOMAIN
+// ==========================================
+
+export interface Integration {
+  integration_id: string;
+  client_id: string;
+  type: string;
+  status: IntegrationStatus;
+  configuration_ref: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface CRMRecord {
+  crm_record_id: string;
+  client_id: string;
+  lead_id: string;
+  external_id: string;
+  system: string;
+  status: CRMRecordSyncStatus;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface CapiLog {
+  capi_log_id: string;
+  client_id: string;
+  lead_id: string;
+  event_name: string;
+  status: CapiStatus;
+  response_code?: number;
+  error_message?: string;
+  created_at: Date | string;
+}
+
+// ==========================================
+// OPERATIONS DOMAIN
+// ==========================================
+
+export interface AuditLog {
+  audit_log_id: string;
+  client_id: string;
+  actor_user_id: string;
+  action: string;
+  resource_type: AuditResourceType;
+  resource_id: string;
+  metadata: Record<string, unknown>;
+  created_at: Date | string;
+}
+
+export interface Usage {
+  usage_id: string;
+  client_id: string;
+  metric: string;
+  value: number;
+  period: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+
+
+============================================================
+FILE: tests/lead.test.ts
+============================================================
+
+import { randomUUID } from 'node:crypto';
+import { describe, expect, it, beforeEach } from 'vitest';
+import {
+  type Client,
+  type Landing,
+  createOrReuseSessionLogic,
+  getFirestoreAdmin,
+  registerLeadLogic,
+} from '../functions/src/index.js';
+
+describe('Module 4 — Lead & Registration Engine (Local / Emulator Mode)', () => {
+  const db = getFirestoreAdmin();
+
+  const clientActive: Client = {
+    client_id: 'lead_client_01',
+    company_name: 'Lead Client Active',
+    business_sector: 'SaaS',
+    legal_name: 'Lead Active Inc',
+    contact_email: 'lead@client.com',
+    contact_phone: '+123456789',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  const landingActive: Landing = {
+    landing_id: 'lead_landing_01',
+    client_id: 'lead_client_01',
+    name: 'Landing Lead Test',
+    slug: 'lead-test',
+    status: 'published',
+    monthly_fee: 100,
+    published_version_id: 'v1.0.0',
+    operational_status: 'active',
+    billing_status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  beforeEach(async () => {
+    await db
+      .collection('clients')
+      .doc(clientActive.client_id)
+      .set(clientActive);
+    await db
+      .collection('landings')
+      .doc(landingActive.landing_id)
+      .set(landingActive);
+
+    // Clean leads collection to ensure test isolation
+    const leadsSnap = await db
+      .collection('leads')
+      .where('client_id', '==', clientActive.client_id)
+      .get();
+    for (const doc of leadsSnap.docs) {
+      await doc.ref.delete();
+    }
+  });
+
+  // =========================================================================
+  // 1. LEAD CREATION & HISTORICAL LINKAGE
+  // =========================================================================
+  describe('Lead Creation & Historical Linkage', () => {
+    it('creates a Lead upon valid form registration and links to anonymous_id', async () => {
+      const anonymousId = randomUUID();
+
+      // Create Session 1
+      const sess1 = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: { utm_source: 'google', utm_medium: 'cpc' },
+      });
+
+      // Submit Form Registration on Session 1
+      const res = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess1.session.session_id,
+        anonymousId,
+        registrationSource: 'form',
+        name: 'Carlos Perez',
+        email: 'carlos@example.com',
+        phone: '+5491112345678',
+        city: 'Buenos Aires',
+      });
+
+      expect(res.isNew).toBe(true);
+      expect(res.lead.lead_id).toBeDefined();
+      expect(res.lead.client_id).toBe(clientActive.client_id);
+      expect(res.lead.anonymous_id).toBe(anonymousId);
+      expect(res.lead.registration_session_id).toBe(sess1.session.session_id);
+      expect(res.lead.registration_source).toBe('form');
+      expect(res.lead.status).toBe('new');
+
+      // Verify lead document persisted in Firestore
+      const leadSnap = await db.collection('leads').doc(res.lead.lead_id).get();
+      expect(leadSnap.exists).toBe(true);
+      expect(leadSnap.data()?.email).toBe('carlos@example.com');
+    });
+
+    it('links Lead with historical sessions without altering historical session documents', async () => {
+      const anonymousId = randomUUID();
+
+      // Session 1
+      const sess1 = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: { utm_source: 'meta' },
+      });
+
+      // Session 2 (simulate 4 minutes later)
+      const fourMinutesAgo = new Date(Date.now() - 240000).toISOString();
+      await db
+        .collection('sessions')
+        .doc(sess1.session.session_id)
+        .update({ last_activity_at: fourMinutesAgo });
+      await db
+        .collection('active_sessions')
+        .doc(
+          `${clientActive.client_id}_${landingActive.landing_id}_${anonymousId}`,
+        )
+        .update({ last_activity_at: fourMinutesAgo });
+
+      const sess2 = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: { utm_source: 'google' },
+      });
+
+      // Registration occurs on Session 2
+      const res = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess2.session.session_id,
+        anonymousId,
+        registrationSource: 'form',
+        name: 'Maria Gomez',
+        email: 'maria@example.com',
+      });
+
+      expect(res.lead.anonymous_id).toBe(anonymousId);
+
+      // Verify Session 1 & Session 2 historical documents remain intact in Firestore
+      const sess1Snap = await db
+        .collection('sessions')
+        .doc(sess1.session.session_id)
+        .get();
+      const sess2Snap = await db
+        .collection('sessions')
+        .doc(sess2.session.session_id)
+        .get();
+
+      expect(sess1Snap.exists).toBe(true);
+      expect(sess2Snap.exists).toBe(true);
+      expect((sess1Snap.data() as any).sessions).toBeUndefined(); // NO sessions[] array stored inside Lead or Session
+    });
+  });
+
+  // =========================================================================
+  // 2. DEDUPLICATION RULES
+  // =========================================================================
+  describe('Lead Deduplication Rules', () => {
+    it('deduplicates Lead by same email and updates existing Lead', async () => {
+      const anonymousId = randomUUID();
+      const sess = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: {},
+      });
+
+      // First Registration
+      const res1 = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess.session.session_id,
+        anonymousId,
+        registrationSource: 'form',
+        name: 'Juan Perez',
+        email: 'juan@example.com',
+      });
+      expect(res1.isNew).toBe(true);
+
+      // Second Registration with same email, updated phone and city
+      const res2 = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess.session.session_id,
+        anonymousId,
+        registrationSource: 'form',
+        name: 'Juan Perez Updated',
+        email: 'JUAN@example.com', // Case insensitive check
+        phone: '+5491199998888',
+        city: 'Cordoba',
+      });
+
+      expect(res2.isNew).toBe(false);
+      expect(res2.lead.lead_id).toBe(res1.lead.lead_id);
+      expect(res2.lead.name).toBe('Juan Perez Updated');
+      expect(res2.lead.phone).toBe('+5491199998888');
+      expect(res2.lead.city).toBe('Cordoba');
+    });
+
+    it('deduplicates Lead by same phone + same name when email is absent', async () => {
+      const anonymousId = randomUUID();
+      const sess = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: {},
+      });
+
+      // Initial registration by phone + name
+      const res1 = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess.session.session_id,
+        anonymousId,
+        registrationSource: 'whatsapp_preform',
+        name: 'Lucas Rossi',
+        phone: '+5491155554444',
+      });
+      expect(res1.isNew).toBe(true);
+
+      // Subsequent registration with same phone + same name
+      const res2 = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess.session.session_id,
+        anonymousId,
+        registrationSource: 'form',
+        name: 'Lucas Rossi',
+        phone: '+5491155554444',
+        email: 'lucas@example.com',
+      });
+
+      expect(res2.isNew).toBe(false);
+      expect(res2.lead.lead_id).toBe(res1.lead.lead_id);
+      expect(res2.lead.email).toBe('lucas@example.com');
+    });
+
+    it('creates NEW Lead if only phone matches but name and email differ', async () => {
+      const anonymousId = randomUUID();
+      const sess = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: {},
+      });
+
+      // Lead 1: Phone + Name A
+      const res1 = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess.session.session_id,
+        anonymousId,
+        registrationSource: 'whatsapp_preform',
+        name: 'Persona A',
+        phone: '+5491100001111',
+      });
+
+      // Registration with same phone but DIFFERENT name & DIFFERENT email
+      const res2 = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess.session.session_id,
+        anonymousId,
+        registrationSource: 'whatsapp_preform',
+        name: 'Persona B',
+        phone: '+5491100001111',
+      });
+
+      // Solo celular does NOT deduplicate if name/email differ
+      expect(res2.isNew).toBe(true);
+      expect(res2.lead.lead_id).not.toBe(res1.lead.lead_id);
+    });
+  });
+
+  // =========================================================================
+  // 3. WHATSAPP PREFORM FLOW
+  // =========================================================================
+  describe('WhatsApp Preform Flow', () => {
+    it('creates Lead with whatsapp_preform registration source', async () => {
+      const anonymousId = randomUUID();
+      const sess = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: {},
+      });
+
+      const res = await registerLeadLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        sessionId: sess.session.session_id,
+        anonymousId,
+        registrationSource: 'whatsapp_preform',
+        name: 'Esteban Quito',
+        phone: '+5491177776666',
+        city: 'Mendoza',
+      });
+
+      expect(res.lead.registration_source).toBe('whatsapp_preform');
+      expect(res.lead.name).toBe('Esteban Quito');
+      expect(res.lead.phone).toBe('+5491177776666');
+    });
+
+    it('rejects registration without email or phone', async () => {
+      const anonymousId = randomUUID();
+      const sess = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: {},
+      });
+
+      await expect(
+        registerLeadLogic({
+          clientId: clientActive.client_id,
+          landingId: landingActive.landing_id,
+          sessionId: sess.session.session_id,
+          anonymousId,
+          registrationSource: 'whatsapp_preform',
+          name: 'Usuario Sin Contacto',
+        }),
+      ).rejects.toThrow(
+        /BadRequest: Lead registration requires at least an email or phone/,
+      );
+    });
+  });
+
+  // =========================================================================
+  // 4. ISOLATION & VALIDATIONS
+  // =========================================================================
+  describe('Isolation & Security', () => {
+    it('rejects Lead registration if session client_id or landing_id mismatches', async () => {
+      const anonymousId = randomUUID();
+      const sess = await createOrReuseSessionLogic({
+        clientId: clientActive.client_id,
+        landingId: landingActive.landing_id,
+        anonymousId,
+        deviceInfo: { device_type: 'desktop' },
+        trackingContext: {},
+      });
+
+      await expect(
+        registerLeadLogic({
+          clientId: 'other_client',
+          landingId: landingActive.landing_id,
+          sessionId: sess.session.session_id,
+          anonymousId,
+          registrationSource: 'form',
+          name: 'Hacker',
+          email: 'hacker@example.com',
+        }),
+      ).rejects.toThrow(
+        /NotFound: Client .*|Forbidden: Registration client_id .* or landing_id .* does not match/,
+      );
+    });
+  });
+});
+
+
+
+============================================================
+FILE: Reportes/ZWAM_Development_Record.md
+============================================================
+
+# ZWAM 2.0 — Registro Histórico Permanente del Desarrollo
+
+Este documento constituye la bitácora técnica acumulativa y fuente única de verdad respecto a las decisiones de arquitectura, modelos de datos, contratos funcionales, código implementado, correcciones y evoluciones de **ZWAM 2.0 (Landing Power + BI)**.
+
+---
+
+## 2026-09-17 10:00 — Módulo 0 (Foundation)
+
+Se estableció la infraestructura base del proyecto monorepo npm con TypeScript strict, ES2022, NodeNext, ESLint, Prettier, Vitest y Firebase Admin SDK en entorno local y emulado.
+
+### Contexto y Definición Inicial
+
+- **Estructura del Proyecto:** Monorepo npm con aplicaciones `apps/web` (React/Next.js UI) y `functions` (Cloud Functions Gen 2 / Backend API), compartiendo el paquete de tipos `@zwam/types` (`packages/types`).
+- **Configuración de Firebase:** Firebase Project ID configurado a `zwam-bi` en `.firebaserc` y `apps/web/src/lib/firebase.ts`. Reglas de Firestore y Storage configuradas inicialmente en modo _deny-all_ por defecto (`allow read, write: if false;`).
+- **Entorno de Ejecución:** Node.js 20+, TypeScript strict mode, resolución de módulos `NodeNext`, testing con Vitest en emuladores locales de Firebase (Auth: 9099, Firestore: 8080, Functions: 5001, Storage: 9199, UI: 4000) sin tocar credenciales de producción.
+
+---
+
+## 2026-09-17 11:30 — Módulo 1 (Data Model & Client Isolation)
+
+Se diseñó e implementó la base del modelo de dominio y la estrategia de aislamiento multi-tenant centrada estrictamente en `client_id` como raíz operacional.
+
+### Aislamiento por `client_id`
+
+- **Invariante Operacional:** `client_id` es el identificador principal de aislamiento en la base de datos.
+- **Prohibiciones Explícitas:** No existe `tenant_id` ni `customer_id` como equivalente o abstracción paralela de tenancy.
+- **Alcance del Dominio:** ZWAM es una plataforma de Inteligencia de Adquisición. No es un CRM completo; los CRM externos se tratan como destinos de integración.
+- **Entidades de Fundación (`@zwam/types`):** `Client`, `ClientContact`, `Contract`, `Subscription`, `Module`, `ClientModule`.
+
+---
+
+## 2026-09-17 13:00 — Módulo 2 (Identity, Memberships & Security)
+
+Se implementó el sistema de identidad centralizado en Firebase Auth, la gestión de membresías dinámicas cliente-usuario y los guards de autorización server-side.
+
+### Modelo de Identidad y Seguridad
+
+- **Identidad:** Mapeo 1:1 de Firebase Auth UID a `users/{user_id}` en Firestore.
+- **Invariante de ID Canónico de Membresía:** Todas las membresías se persisten obligatoriamente con el Document ID canónico `memberships/{authUid}_{clientId}`. Las consultas `getMembershipForClient(authUid, clientId)` resuelven en O(1) directamente por clave de documento sin realizar fallbacks de consulta de campos.
+- **Global ZWAM Admin:** Representado exclusivamente por `is_global_admin: true` en el documento `users/{user_id}`. Se eliminó la función/rol artificial `zwam_admin` de las membresías.
+- **Guards Server-side (`functions/src/lib/auth-guard.ts`):** `requireAuthenticatedUser`, `requireMembership`, `requireClientAccess`, `requirePermission`, `requireActiveClient`.
+
+---
+
+## 2026-09-17 14:30 — Módulo 3 (Acquisition Intelligence Engine)
+
+Se implementó el motor de ingestión de tráfico y comportamiento (Campaign → Adset → Ad → Landing → Session → Events → Attribution) con reglas de sesión estrictas, preservación RAW de tracking, circuit breaker, rate limiting y salvaguardas de seguridad.
+
+### Ingestión y Reglas Operacionales de Adquisición
+
+- **Persistencia de Identidad Anónima:** `anonymous_id` (UUID v4) persistido **exclusivamente en `localStorage`** (nunca `sessionStorage`).
+- **Regla de Inactividad de 3 Minutos:** Una sesión permanece activa si `now - last_activity_at < 3 minutos` (180,000 ms). **Sin heartbeats, latidos ni pings sintéticos**. `last_activity_at` se actualiza únicamente ante ingestión de eventos reales o creación/reutilización válida de sesión.
+- **Resolución Server-Side de `landing_version_id`:** `landing_version_id = landing.published_version_id`. Sin fallbacks a `draft_version_id` ni a `'v1'`. Si no existe versión publicada, la sesión se rechaza.
+- **Coordinación Atómica en Firestore (`active_sessions`):** Uso de puntero atómico `active_sessions/{client_id}_{landing_id}_{anonymous_id}` dentro de una transacción `db.runTransaction` para prevenir race conditions y duplicados ante peticiones concurrentes. La fuente de verdad histórica completa permanece en `sessions`.
+- **Autenticación Opcional Server-Side:** `session.user_id` solo se asigna si el token de Firebase Auth es verificado server-side vía `verifyAuthToken`. La ingestión pública anónima continúa funcionando sin exigir token.
+- **Salvaguardas:** Circuit Breaker (`client.status === 'active'` y `landing.operational_status === 'active'`), Rate Limiting (20 req/min en creación de sesión, 60 req/min en eventos vía Firestore `rate_limits`), e idempotencia por `event_id` (UUID v4) con timestamp del servidor `received_at`.
+- **Hito de Validación:** Módulo 3 cerrado con **35/35 tests pasados** y commit checkpoint `a1e0f5b feat: complete module 3 acquisition`.
+
+---
+
+## 2026-09-17 15:40 — Módulo 4
+
+Se implementó el modelo Lead, la lógica de Registration, deduplicación de Leads, vinculación mediante anonymous_id con el historial de Sessions y el flujo de registro mediante formulario y preformulario de WhatsApp.
+
+### 1. Definición Funcional y Contrato de Lead
+
+- **Relación del Flujo Operacional:**
+  ```text
+  VISIT → SESSION → EVENTS → REGISTRATION → LEAD → PURCHASE → CLIENT
+  ```
+- **Principio Fundamental:** Un Lead NO se crea por mera intención (ej. un clic en botón de WhatsApp no crea Lead por sí solo). Un Lead nace únicamente a partir de una **Registration** válida (formulario web o preformulario de WhatsApp completado).
+- **Modelo de Datos (`leads/{lead_id}`):**
+  - `lead_id`: string (PK UUID v4)
+  - `client_id`: string (FK -> `clients.client_id`)
+  - `anonymous_id`: string (vínculo con el historial de sesiones y eventos del visitante)
+  - `name`: string
+  - `email`: string (opcional / normalizado a minúsculas)
+  - `phone`: string (opcional / normalizado a dígitos numéricos)
+  - `company`: string (opcional)
+  - `city`: string (opcional)
+  - `registration_session_id`: string (FK -> `sessions.session_id`)
+  - `registration_source`: `'form'` | `'whatsapp_preform'`
+  - `created_at`: Date | string
+  - `updated_at`: Date | string
+  - `status`: `'new'` | `'contacted'` | `'qualified'` | `'unqualified'` | `'converted'`
+- **Exclusiones Explícitas:** No se incluyeron campos de score, calidad comercial, oportunidad, compra, ingresos, CRM status ni agente comercial en este módulo.
+
+### 2. Trazabilidad Histórica y Persistencia de `anonymous_id`
+
+- **Vinculación Histórica:** La colección `leads` contiene el `anonymous_id` para consultar retroactivamente todas las sesiones anteriores del visitante (`sessions WHERE anonymous_id == lead.anonymous_id`).
+- **Sin Listas Crecientes:** **NO** se creó un array `lead.sessions[]` dentro del documento Lead. Las sesiones se mantienen como documentos independientes en la colección `sessions`.
+- **Invarianza de Históricos:** Las sesiones y eventos del pasado no sufren modificaciones ni borrados cuando se crea o actualiza un Lead.
+
+### 3. Flujo de WhatsApp y Preformulario
+
+- El evento `whatsapp_click` por sí mismo registra únicamente un evento de comportamiento en la sesión.
+- Para generar un Lead a partir de WhatsApp se requiere la Registration vía Preformulario:
+  - Si el número de WhatsApp no está disponible en la sesión, el preformulario solicita: Nombre, Ciudad y WhatsApp.
+  - Si el número es conocido, el preformulario solicita: Nombre y Ciudad.
+
+### 4. Motor de Deduplicación de Leads
+
+- **Regla de Coincidencia de Deduplicación:**
+  - `(phone + email)` **O** `(phone + name)` **O** `email`
+- **Criterios de Aplicación:**
+  - Si se registra el mismo celular + mismo email → actualiza Lead existente.
+  - Si se registra el mismo celular + mismo nombre → actualiza Lead existente.
+  - Si se registra el mismo email (con o sin celular) → actualiza Lead existente.
+  - Registrar solo celular o solo nombre sin email ni combinación cel+nombre **no es suficiente** para deduplicar (crea un nuevo Lead).
+- **Preservación en Actualización:** Al actualizar un Lead existente, se preservan intactos el `lead_id`, `created_at`, `status` y `anonymous_id`, actualizando únicamente los datos de contacto, la sesión de registro reciente `registration_session_id`, la fuente `registration_source` y la fecha de modificación `updated_at`.
+
+### 5. Separación Estricta entre Lead Deduplication y CAPI
+
+- La deduplicación de contacto comercial de Lead es totalmente independiente de la futura deduplicación de eventos para Conversions API (CAPI).
+
+### 6. Componentes de Código Creados / Modificados
+
+- `packages/types/src/enums.ts`: Añadido el tipo `RegistrationSource` (`'form' | 'whatsapp_preform'`).
+- `packages/types/src/domain.ts`: Actualizada la interfaz `Lead` para alinearse 100% al contrato del Módulo 4.
+- `functions/src/leads/registration.ts`: Creado el servicio backend `registerLeadLogic` con validaciones, deduplicación, resolución de sesión y persistencia en Firestore.
+- `functions/src/index.ts`: Re-exportado el módulo de registro de leads.
+- `apps/web/src/lib/tracking/client.ts`: Añadido el método `registerLead` a `AcquisitionApiClient`.
+- `apps/web/src/lib/tracking/leads.ts`: Creadas las funciones auxiliares `submitFormRegistration` y `submitWhatsAppPreform`.
+- `apps/web/src/lib/tracking/index.ts`: Re-exportados los helpers de tracking de leads.
+- `tests/lead.test.ts`: Creada la suite completa de pruebas de integración y negocio para el Módulo 4.
+
+### 7. Validación del Módulo 4
+
+- `npm run typecheck` — 0 errores de compilación TypeScript.
+- `npm run lint` — 0 advertencias / errores de ESLint.
+- `npm run format:check` — 100% archivos formateados con Prettier.
+- `npm test` — Pruebas pasadas satisfactoriamente (incluyendo Lead creation, historical linkage, deduplication rules, WhatsApp preform y aislamiento).
+

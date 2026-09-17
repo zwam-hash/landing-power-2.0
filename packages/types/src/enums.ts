@@ -55,6 +55,8 @@ export type RecommendedAction =
   | 'nurturing'
   | 'remarketing';
 
+export type RegistrationSource = 'form' | 'whatsapp_preform';
+
 export type LeadStatus =
   'new' | 'contacted' | 'qualified' | 'unqualified' | 'converted';
 

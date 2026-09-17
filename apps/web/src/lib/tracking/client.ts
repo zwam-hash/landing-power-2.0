@@ -63,4 +63,30 @@ export class AcquisitionApiClient {
 
     return res.json();
   }
+
+  async registerLead(req: {
+    clientId: string;
+    landingId: string;
+    sessionId: string;
+    anonymousId: string;
+    registrationSource: 'form' | 'whatsapp_preform';
+    name: string;
+    email?: string;
+    phone?: string;
+    company?: string;
+    city?: string;
+  }): Promise<{ lead: any; isNew: boolean }> {
+    const res = await fetch(`${this.baseUrl}/registerLead`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`LeadRegistrationError (${res.status}): ${errText}`);
+    }
+
+    return res.json();
+  }
 }

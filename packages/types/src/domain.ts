@@ -25,6 +25,7 @@ import type {
   OpportunityStatus,
   Permission,
   RecommendedAction,
+  RegistrationSource,
   Role,
   SaleStatus,
   SourceType,
@@ -308,27 +309,22 @@ export interface LeadAttribution extends Attribution {
 export interface Lead {
   lead_id: string;
   client_id: string;
-  landing_id: string;
-  session_id: string;
+
+  anonymous_id: string;
 
   name: string;
-  email: string;
-  phone: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  city?: string;
 
-  attribution: LeadAttribution;
-
-  lead_score: number;
-  lead_quality: LeadQuality;
-  recommended_action: RecommendedAction;
-  score_breakdown: ScoreBreakdown;
-  score_flags: ScoreFlags;
-  scoring_configuration_version: string;
-
-  status: LeadStatus;
-  capi_status: CapiStatus;
+  registration_session_id: string;
+  registration_source: RegistrationSource;
 
   created_at: Date | string;
   updated_at: Date | string;
+
+  status: LeadStatus;
 }
 
 // Alias interfaces for consistency
