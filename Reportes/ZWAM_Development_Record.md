@@ -160,3 +160,108 @@ Se implementó la validación estricta de coincidencia entre session.anonymous_i
 - **Test de Deduplicación por Email Únicamente:** Valida que un nuevo registro con el mismo email pero distinto nombre y sin teléfono no cree un nuevo Lead, sino que actualice el existente preservando `lead_id` y `created_at`.
 - **Test de Integridad Session ↔ `anonymous_id`:** Valida que el envío de un `anonymous_id` distinto al de la sesión sea rechazado con un error `Forbidden`.
 - **Test de Desvinculación Clic/Preformulario:** Valida que `trackWhatsAppClick` registre el evento sin crear un documento Lead.
+
+## 2026-09-17 16:30 — Módulo 5 — Lead Qualification / Scoring
+
+Se implementó el motor de Lead Qualification y Lead Scoring (`calculateLeadScoreLogic`) para ZWAM 2.0. El desarrollo incluyó la ampliación de los contratos de tipo en `@zwam/types` (`ScoringRule`, `ScoreFlags`, `Lead`), la creación de la lógica de evaluación comercial derivada histórica en `functions/src/leads/scoring.ts`, la exportación de las funciones en `functions/src/index.ts`, la creación de la suite de pruebas unitarias/integración `tests/scoring.test.ts` con 7 nuevos tests (llegando a 52/52 tests en el proyecto) y la verificación completa del sistema mediante `format`, `typecheck`, `lint` y `test`.
+
+### 1. Objetivo de M5
+
+Establecer la capa comercial de evaluación numérica (`LeadScore`) y cualitativa (`LeadQuality`) derivada del comportamiento histórico observado del Lead a través de sus `Sessions` y `Events` asociados mediante `anonymous_id`.
+
+### 2. Modelo de Score y Escala
+
+- **Escala de Score:** Numérica de 0 a 100 (`0` = ausencia de señales; `100` = máxima acumulación de señales).
+- **Quality (Derivada):**
+  - `'hot'`: Score >= 70 (Acción recomendada: `'immediate_priority'`)
+  - `'warm'`: 35 <= Score < 70 (Acción recomendada: `'follow_up'`)
+  - `'cold'`: Score < 35 (Acción recomendada: `'nurturing'`)
+- **Desglose (`ScoreBreakdown`):**
+  - `behavior_score`: Puntos provenientes de `page_view`, `engaged_time`, `multiple_sessions`.
+  - `intent_score`: Puntos provenientes de `high_intent`, `package_click`, `form_start`, `whatsapp_click`.
+  - `context_score`: Puntos provenientes de `is_paid_traffic`.
+
+### 3. Motor de Reglas Configurables, Pesos y Caps (v1)
+
+- `page_view`: Peso +2, Cap 10 puntos (máx. 5 vistas contabilizadas).
+- `engaged_time`: Peso +5, Cap 15 puntos.
+- `high_intent`: Peso +20, Cap 40 puntos.
+- `package_click`: Peso +15, Cap 30 puntos.
+- `form_start`: Peso +10, Cap 20 puntos.
+- `whatsapp_click`: Peso +15, Cap 30 puntos.
+- `multiple_sessions`: Peso +10, Cap 10 puntos.
+- `is_paid_traffic`: Peso +10, Cap 10 puntos.
+- **Prevención de Inflación por Repetición:** Las reglas aplican límites por señal (`cap`) garantizando que eventos de baja intención (e.g. 100 `page_view`s) no superen su límite relativo.
+
+### 4. Flags Estructurados (`ScoreFlags`)
+
+- `is_paid_traffic`: Evalúa si alguna sesión histórica provino de tráfico pagado (`source_type === 'paid'`).
+- `is_returning_user`: Evalúa si el visitante tiene más de 1 sesión histórica (`sessionCount > 1`).
+- `has_high_intent`: Indica si registró al menos un evento `high_intent`.
+- `whatsapp_interest`: Indica si registró al menos un evento `whatsapp_click`.
+- `package_interest`: Indica si registró al menos un evento `package_click`.
+- `multiple_sessions`: Indica recurrencia entre sesiones.
+
+### 5. Fuente Histórica y Determinismo
+
+- **Derivación por Identidad:** Consulta las sesiones históricas en `sessions` vinculadas por `client_id` y `anonymous_id`, y los eventos en `events` asociados a esas sesiones. No agrega arreglos `sessions[]` dentro del documento Lead.
+- **Idempotencia:** El cálculo es idéntico y determinista ante la misma historia y versión del algoritmo (`calculation_version = 'v1'`). Recalcular actualiza `last_calculated_at` sin duplicar puntos ni corruptar datos.
+- **Aislamiento por Cliente:** Todas las consultas a Firestore (`leads`, `sessions`, `events`) están estrictamente filtradas por `client_id`. Jamás se incorporan datos de otro cliente.
+
+### 6. Archivos Modificados / Creados
+
+- `packages/types/src/enums.ts` (modificado: valores `'hot'` y `'warm'` añadidos a `LeadQuality`).
+- `packages/types/src/domain.ts` (modificado: interfaz `ScoringRule`, campos extendidos en `ScoreFlags` y `Lead`).
+- `functions/src/leads/scoring.ts` (creado: `calculateLeadScoreLogic` y `DEFAULT_V1_SCORING_RULES`).
+- `functions/src/index.ts` (modificado: exportación de `scoring.ts`).
+- `tests/scoring.test.ts` (creado: 8 casos de prueba exhaustivos para M5).
+- `Reportes/ZWAM_Development_Record.md` (actualizado).
+
+### 7. Pruebas y Resultados
+
+- `npm run format` -> Exitoso.
+- `npm run typecheck` -> 0 errores.
+- `npm run lint` -> 0 errores / warnings.
+- `npm run format:check` -> OK.
+- `npm test` -> 5 suites de prueba pasadas, 53/53 tests exitosos.
+
+### 8. Desviaciones y Alcance Estricto
+
+- Sin desviaciones contractuales.
+- No se implementaron capas posteriores de `Opportunity`, `Purchase`, `Sale`, `Revenue`, `CRM`, `CAPI` ni `Meta Ads Sync`.
+
+## 2026-09-17 16:45 — Módulo 5 — Corrección de Lead Qualification / Scoring
+
+Se aplicaron las correcciones contractuales obligatorias sobre el Módulo 5 (Lead Qualification / Scoring).
+
+### 1. Modificaciones Realizadas
+
+1. **`engaged_time` como señal de conteo:**
+   - `engaged_time` se evalúa strictly como una señal/evento de presencia (+5 puntos por evento, acotado a un cap de 15).
+   - No se lee ni exige ninguna metadata de duración, segundos o milisegundos, manteniendo total coherencia con el contrato de eventos de M3.
+
+2. **Detección de Tráfico Pagado (`is_paid_traffic`):**
+   - El motor de scoring consume exclusivamente `Session.attribution.source_type === 'paid'` ya resuelto por M3.
+   - M5 no procesa ni reinterpreta parámetros RAW (`utm_source`, `utm_medium`, `fbclid`, `gclid`). La atribución permanece acoplada exclusivamente a Session.
+
+3. **Normalización de `LeadQuality`:**
+   - Se eliminaron los valores legacy `'priority'`, `'high'`, `'medium'`, `'low'` de `LeadQuality` en `packages/types/src/enums.ts`.
+   - El tipo `LeadQuality` queda definido estrictamente como `'hot' | 'warm' | 'cold'`.
+
+4. **Eliminación de `LeadAttribution`:**
+   - Se eliminó la interfaz no utilizada `LeadAttribution` en `packages/types/src/domain.ts`.
+   - Se reafirma que Lead conserva únicamente `registration_session_id` y `anonymous_id`, y que Session es la única fuente de verdad para atribución.
+
+5. **Pruebas de Corrección (`tests/scoring.test.ts`):**
+   - Se reestructuró la suite de pruebas con 7 casos obligatorios comprobando `engaged_time` sin duración, sesiones históricas, `is_paid_traffic` desde atribución pagada, tráfico no pagado, umbrales de `LeadQuality`, aislamiento por `client_id` y recálculo determinista.
+
+### 2. Resultados de las Validaciones
+
+- **`npm run typecheck`**: 0 errores de compilación TypeScript.
+- **`npm run lint`**: 0 advertencias / 0 errores de ESLint.
+- **`npm run format:check`**: OK (Todos los archivos cumplen con el estilo Prettier).
+- **`npm test`**: 5 suites pasadas, 52/52 tests exitosos.
+
+### 3. Estado de M5
+
+- La implementación de las correcciones de M5 ha sido completada y verificada mediante la suite de tests. Pendiente de revisión técnica del cliente.

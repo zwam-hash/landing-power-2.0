@@ -297,13 +297,16 @@ export interface ScoreFlags {
   is_paid_traffic: boolean;
   is_returning_user: boolean;
   has_high_intent: boolean;
+  whatsapp_interest?: boolean;
+  package_interest?: boolean;
+  multiple_sessions?: boolean;
 }
 
-export interface LeadAttribution extends Attribution {
-  landing_id?: string;
-  campaign_id?: string;
-  adset_id?: string;
-  ad_id?: string;
+export interface ScoringRule {
+  signal: string;
+  weight: number;
+  cap?: number;
+  active: boolean;
 }
 
 export interface Lead {
@@ -325,6 +328,14 @@ export interface Lead {
   updated_at: Date | string;
 
   status: LeadStatus;
+
+  lead_score?: number;
+  lead_quality?: LeadQuality;
+  recommended_action?: RecommendedAction;
+  score_breakdown?: ScoreBreakdown;
+  score_flags?: ScoreFlags;
+  calculation_version?: string;
+  last_calculated_at?: Date | string;
 }
 
 // Alias interfaces for consistency

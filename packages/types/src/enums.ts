@@ -46,7 +46,7 @@ export type EventType =
   | 'whatsapp_click'
   | 'custom';
 
-export type LeadQuality = 'priority' | 'high' | 'medium' | 'low' | 'cold';
+export type LeadQuality = 'hot' | 'warm' | 'cold';
 
 export type RecommendedAction =
   | 'immediate_priority'

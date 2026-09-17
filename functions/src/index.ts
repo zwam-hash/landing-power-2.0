@@ -9,3 +9,4 @@ export * from './acquisition/session.js';
 export * from './acquisition/event.js';
 export * from './acquisition/campaign.js';
 export * from './leads/registration.js';
+export * from './leads/scoring.js';
