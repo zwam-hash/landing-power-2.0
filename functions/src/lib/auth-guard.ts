@@ -31,24 +31,26 @@ export async function getUserMemberships(
 
 /**
  * Fetches an active membership for a specific user and client_id.
+ * Resolves EXCLUSIVELY via the canonical Document ID convention `memberships/{authUid}_{clientId}`.
  */
 export async function getMembershipForClient(
   authUid: string,
   clientId: string,
 ): Promise<Membership | null> {
   const db = getFirestoreAdmin();
-  const snap = await db
-    .collection('memberships')
-    .where('user_id', '==', authUid)
-    .where('client_id', '==', clientId)
-    .where('status', '==', 'active')
-    .limit(1)
-    .get();
+  const membershipId = `${authUid}_${clientId}`;
+  const snap = await db.collection('memberships').doc(membershipId).get();
 
-  if (snap.empty) {
+  if (!snap.exists) {
     return null;
   }
-  return snap.docs[0].data() as Membership;
+
+  const membership = snap.data() as Membership;
+  if (membership.status !== 'active') {
+    return null;
+  }
+
+  return membership;
 }
 
 /**

@@ -61,8 +61,7 @@ export type CRMRecordSyncStatus = 'synced' | 'pending' | 'failed';
 
 export type CapiStatus = 'pending' | 'sent' | 'failed' | 'skipped';
 
-export type Role =
-  'client_master' | 'marketing' | 'commercial' | 'agency' | 'zwam_admin';
+export type Role = 'client_master' | 'marketing' | 'commercial' | 'agency';
 
 export type DataScope = 'global' | 'client' | 'team' | 'assigned';
 

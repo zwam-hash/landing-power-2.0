@@ -16,22 +16,25 @@
 - **Firebase Authentication** is the sole identity provider.
 - Firebase Auth UID is mapped 1:1 to `user_id` in Firestore (`users/{user_id}`).
 
-### 2.2 Memberships as Source of Truth
+### 2.2 Memberships as Source of Truth & Canonical Document ID Invariant
 
 - The relation `USER ↔ CLIENT` is stored and validated directly in Firestore `memberships/{membership_id}`.
+- **Canonical Document ID Invariant:** All membership documents MUST use the strict canonical Document ID format `${user_id}_${client_id}` (e.g. `memberships/user_a_uid_client_a`).
+- `getMembershipForClient(authUid, clientId)` resolves **exclusively** via `memberships/${authUid}_${clientId}` in O(1) time without field query fallbacks. Records without this ID format are treated as invalid.
 - **Why Custom Claims are NOT the primary source:** Storing memberships in Firestore avoids data duplication, sync delays, and token size limits, while supporting multi-client memberships dynamically without requiring token refreshes.
 
 ### 2.3 Roles, Granular Permissions & Data Scope
 
-- **Roles:** Functional groupings (`client_master`, `marketing`, `commercial`, `agency`, `zwam_admin`).
+- **Membership Roles (Client-Scoped):** Functional groupings (`client_master`, `marketing`, `commercial`, `agency`). `zwam_admin` is NOT a membership role.
 - **Permissions:** Action-level granular strings (`leads.view`, `sales.create`, `users.manage`, `memberships.manage`, `bi.view`, `settings.manage`).
-- **Data Scope:** Defines _data boundary access_ (`global`, `client`, `team`, `assigned`), cleanly separated from tool permissions.
+- **Data Scope:** Contract defining _data boundary access_ (`global`, `client`, `team`, `assigned`), cleanly separated from tool permissions. Complete assigned/team query evaluation logic will be implemented as operational modules (Leads/Commercial) are introduced.
 
 #### Conceptual Flow:
 
 ```text
 USER (Auth UID)
   └── MEMBERSHIP
+        ├── DOCUMENT ID: {user_id}_{client_id}
         ├── CLIENT_ID (e.g. "acme_corp")
         ├── ROLE (e.g. "commercial")
         ├── PERMISSIONS (e.g. ["leads.view", "sales.create"])
@@ -44,13 +47,13 @@ A single user can hold independent active memberships for multiple distinct `cli
 
 ```text
 USER A (user_a_uid)
-  ├── membership_1 ──> CLIENT A (Role: commercial)
-  └── membership_2 ──> CLIENT B (Role: marketing)
+  ├── membership (doc: user_a_uid_client_a) ──> CLIENT A (Role: commercial)
+  └── membership (doc: user_a_uid_client_b) ──> CLIENT B (Role: marketing)
 ```
 
 ### 2.5 Global ZWAM Admin
 
-- Represented by `is_global_admin: true` on `users/{user_id}`.
+- Represented **exclusively** by `is_global_admin: true` on `users/{user_id}`.
 - Global ZWAM admins operate across multiple client organizations with `'global'` scope without creating artificial individual membership documents per client.
 
 ### 2.6 Backend Authorization (`functions/src/lib/auth-guard.ts`)
@@ -65,7 +68,14 @@ Backend Cloud Functions and APIs enforce authorization through reusable guards:
 
 ---
 
-## 3. Shared Domain Layer (`@zwam/types`)
+## 3. Module Registry Boundary (`Module` vs `ClientModule`)
+
+- **`Module`:** Global definition of a ZWAM module (e.g., `key: "acquisition"`, `name: "Acquisition Intelligence"`).
+- **`ClientModule`:** Client-specific instance and status (`client_id`, `module_id`, `status`, `configuration: Record<string, unknown>`).
+
+---
+
+## 4. Shared Domain Layer (`@zwam/types`)
 
 The project uses a dedicated lightweight workspace package `packages/types` (`@zwam/types`) containing pure TypeScript types, interfaces, and status unions/enums.
 
@@ -80,7 +90,7 @@ The project uses a dedicated lightweight workspace package `packages/types` (`@z
 
 ---
 
-## 4. Timestamp & Persistence Convention
+## 5. Timestamp & Persistence Convention
 
 - **Domain Types:** Use `Date | string` to remain platform-agnostic.
 - **Firestore Persistence:** Use `WithFirestoreTimestamps<T>` and `FirestoreTimestampField` (`Date | string | FirestoreTimestamp`).
@@ -88,7 +98,7 @@ The project uses a dedicated lightweight workspace package `packages/types` (`@z
 
 ---
 
-## 5. Security & Environment Configuration
+## 6. Security & Environment Configuration
 
 - **Firestore Rules:** Enforces strict _deny-by-default_ (`allow read, write: if false;`) with helper validation functions for authentication and client isolation (`hasClientAccess(clientId)`, `isGlobalAdmin()`).
 - **Firebase Project Target:** Confirmed project ID `zwam-bi` configured in `.firebaserc` and `apps/web/src/lib/firebase.ts`.

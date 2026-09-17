@@ -21,10 +21,10 @@ Global user identities mapped 1:1 from Firebase Auth UIDs.
 
 Source of truth for user authorization and membership scoping per client organization.
 
-- `membership_id` (string, PK)
+- **Canonical Document ID Invariant:** `membership_id` = `{user_id}_{client_id}` (e.g. `user_a_uid_client_a`)
 - `user_id` (string, FK -> `users.user_id`)
 - `client_id` (string, FK -> `clients.client_id`)
-- `role` (`Role`: `'client_master'` | `'marketing'` | `'commercial'` | `'agency'` | `'zwam_admin'`)
+- `role` (`Role`: `'client_master'` | `'marketing'` | `'commercial'` | `'agency'`)
 - `data_scope` (`DataScope`: `'global'` | `'client'` | `'team'` | `'assigned'`)
 - `permissions` (string array of `Permission`: e.g. `['leads.view', 'sales.create']`)
 - `status` (`MembershipStatus`: `'active'` | `'invited'` | `'disabled'`)
@@ -43,9 +43,16 @@ Root entity for customer organizations.
 - `status` (`ClientStatus`: `'active'` | `'inactive'` | `'suspended'` | `'pending'`)
 - `created_at`, `updated_at` (Timestamp)
 
+### `modules` & `client_modules`
+
+Global module definitions and client-specific module configurations.
+
+- `modules`: `module_id` (PK), `key`, `name`, `description`, `status`
+- `client_modules`: `client_module_id` (PK), `client_id`, `module_id`, `status`, `configuration` (`Record<string, unknown>`)
+
 ---
 
-## 2. Acquisition Domain
+## 2. Acquisition Domain Contracts
 
 ### `landings`
 
@@ -63,7 +70,7 @@ Landing pages owned by a client.
 
 ---
 
-## 3. Leads & Commercial Domain
+## 3. Leads & Commercial Domain Contracts
 
 ### `leads` & `sales`
 

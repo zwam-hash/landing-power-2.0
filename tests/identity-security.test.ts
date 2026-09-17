@@ -69,7 +69,7 @@ describe('Module 2 — Identity, Memberships & Security Guards (Local / Emulator
   };
 
   const membershipUserAClientA: Membership = {
-    membership_id: 'mem_a_a',
+    membership_id: 'user_a_uid_client_a',
     user_id: 'user_a_uid',
     client_id: 'client_a',
     role: 'commercial',
@@ -81,7 +81,7 @@ describe('Module 2 — Identity, Memberships & Security Guards (Local / Emulator
   };
 
   const membershipUserAClientB: Membership = {
-    membership_id: 'mem_a_b',
+    membership_id: 'user_a_uid_client_b',
     user_id: 'user_a_uid',
     client_id: 'client_b',
     role: 'marketing',
@@ -93,7 +93,7 @@ describe('Module 2 — Identity, Memberships & Security Guards (Local / Emulator
   };
 
   const inactiveMembership: Membership = {
-    membership_id: 'mem_inactive',
+    membership_id: 'user_a_uid_client_c',
     user_id: 'user_a_uid',
     client_id: 'client_c',
     role: 'commercial',
@@ -207,5 +207,31 @@ describe('Module 2 — Identity, Memberships & Security Guards (Local / Emulator
     await expect(
       requirePermission('user_a_uid', 'client_b', 'sales.create'),
     ).rejects.toThrow(/Forbidden: User lacks the required permission/);
+  });
+
+  // CASO 9: Invariante de Document ID canónico (sin fallback)
+  it('CASE 9: Rejects membership records stored with non-canonical Document IDs', async () => {
+    // Save a membership with fields pointing to user_a_uid and client_d, but with a non-canonical doc ID 'invalid_id_format'
+    const nonCanonicalMembership: Membership = {
+      membership_id: 'invalid_id_format',
+      user_id: 'user_a_uid',
+      client_id: 'client_d',
+      role: 'commercial',
+      data_scope: 'client',
+      permissions: ['leads.view'],
+      status: 'active',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    await db
+      .collection('memberships')
+      .doc(nonCanonicalMembership.membership_id)
+      .set(nonCanonicalMembership);
+
+    // Require client access for client_d must be rejected because getMembershipForClient resolves strictly via doc('user_a_uid_client_d')
+    await expect(requireClientAccess('user_a_uid', 'client_d')).rejects.toThrow(
+      /Forbidden: User does not have an active membership/,
+    );
   });
 });
