@@ -210,11 +210,11 @@ Establecer la capa comercial de evaluación numérica (`LeadScore`) y cualitativ
 
 ### 6. Archivos Modificados / Creados
 
-- `packages/types/src/enums.ts` (modificado: valores `'hot'` y `'warm'` añadidos a `LeadQuality`).
-- `packages/types/src/domain.ts` (modificado: interfaz `ScoringRule`, campos extendidos en `ScoreFlags` y `Lead`).
+- `packages/types/src/enums.ts` (modificado: `LeadQuality` normalizado a `'hot' | 'warm' | 'cold'`).
+- `packages/types/src/domain.ts` (modificado: interfaz `ScoringRule`, campos extendidos en `ScoreFlags` y `Lead`, eliminación de `LeadAttribution`).
 - `functions/src/leads/scoring.ts` (creado: `calculateLeadScoreLogic` y `DEFAULT_V1_SCORING_RULES`).
 - `functions/src/index.ts` (modificado: exportación de `scoring.ts`).
-- `tests/scoring.test.ts` (creado: 8 casos de prueba exhaustivos para M5).
+- `tests/scoring.test.ts` (creado: 7 casos de prueba para M5).
 - `Reportes/ZWAM_Development_Record.md` (actualizado).
 
 ### 7. Pruebas y Resultados
@@ -223,7 +223,7 @@ Establecer la capa comercial de evaluación numérica (`LeadScore`) y cualitativ
 - `npm run typecheck` -> 0 errores.
 - `npm run lint` -> 0 errores / warnings.
 - `npm run format:check` -> OK.
-- `npm test` -> 5 suites de prueba pasadas, 53/53 tests exitosos.
+- `npm test` -> 5 suites de prueba pasadas, 52/52 tests exitosos.
 
 ### 8. Desviaciones y Alcance Estricto
 
@@ -246,7 +246,7 @@ Se aplicaron las correcciones contractuales obligatorias sobre el Módulo 5 (Lea
 
 3. **Normalización de `LeadQuality`:**
    - Se eliminaron los valores legacy `'priority'`, `'high'`, `'medium'`, `'low'` de `LeadQuality` en `packages/types/src/enums.ts`.
-   - El tipo `LeadQuality` queda definido estrictamente como `'hot' | 'warm' | 'cold'`.
+   - El tipo `LeadQuality` queda definido strictly como `'hot' | 'warm' | 'cold'`.
 
 4. **Eliminación de `LeadAttribution`:**
    - Se eliminó la interfaz no utilizada `LeadAttribution` en `packages/types/src/domain.ts`.
@@ -262,6 +262,12 @@ Se aplicaron las correcciones contractuales obligatorias sobre el Módulo 5 (Lea
 - **`npm run format:check`**: OK (Todos los archivos cumplen con el estilo Prettier).
 - **`npm test`**: 5 suites pasadas, 52/52 tests exitosos.
 
-### 3. Estado de M5
+### 3. Cierre de M5
 
-- La implementación de las correcciones de M5 ha sido completada y verificada mediante la suite de tests. Pendiente de revisión técnica del cliente.
+M5 fue revisado, corregido y validado exitosamente con 52/52 tests pasando en 5 suites de prueba (`foundation`, `identity-security`, `acquisition`, `lead`, `scoring`).
+
+Posteriormente, los cambios del módulo fueron integrados y publicados en `origin/dev` mediante el commit:
+
+`0f73539 feat: complete module 5 lead scoring`
+
+El Módulo 5 queda oficialmente cerrado. El trabajo posterior corresponde al diseño y revisión del Módulo 6.
